@@ -1,15 +1,21 @@
 <script setup>
 import { nextTick } from 'vue'
 import { ref } from 'vue'
+import { onMounted } from 'vue'
 
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import {ElMessage, ElMessageBox } from 'element-plus'
+
+onMounted(() => { loadDocuments() })
 
 // 用户输入框内容
 const question = ref('')
 
 // 聊天消息列表
 const messages = ref([])
+
+// 知识库文件
+const documents = ref([])
 
 // 是否正在加载
 const loading = ref(false)
@@ -49,6 +55,39 @@ const uploadFile = async () => {
     ElMessage.error(errMsg)
   }
   uploading.value = false
+  await loadDocuments()
+}
+
+// 获取文件列表
+const loadDocuments = async () => {
+  try {
+    const response = await axios.get('http://127.0.0.1:8000/documents', { params: { user_id: 'Joker3e' } })
+    documents.value = response.data
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+// 删除文件
+const deleteDocument = async (fileHash) => {
+  ElMessageBox.confirm('确定要删除这个文件吗？', '提示', {
+    type: 'warning',
+    confirmButtonText: '确认',
+    cancelButtonText: '取消',
+  }).then(async () => {
+    try {
+      await axios.delete('http://127.0.0.1:8000/delete_document', {
+        params: { user_id: 'Joker3e', file_hash: fileHash }
+      })
+      await loadDocuments()
+      ElMessage.success('删除成功')
+    } catch (error) {
+      console.error(error)
+      ElMessage.error('删除失败')
+    }
+  }).catch(() => {
+    // 用户取消删除
+  })
 }
 
 // 发送消息函数
@@ -148,43 +187,70 @@ const handleFileChange = (event) => {
 
 <template>
   <div class="container">
-    <h1>AI RAG Chat</h1>
+    <div class="main-layout">
+      <!-- 左侧知识库 -->
+      <div class="document-panel">
+        <div class="document-header">
+          <h2>知识库</h2>
+        </div>
 
-    <!-- 聊天区域 -->
-    <div ref="chatBox" class="chat-box">
-      <!-- 循环渲染消息 -->
-      <div v-for="(msg, index) in messages" :key="index" class="message">
-        <!-- 用户消息 -->
-        <div v-if="msg.role === 'user'" class="user-message">你：{{ msg.content }}</div>
+        <!-- 上传区域 -->
+        <div class="upload-box">
+          <input type="file" @change="handleFileChange" />
 
-        <!-- AI 消息 -->
-        <div v-else class="ai-message">AI：{{ msg.content }}</div>
-        <div v-if="msg.sources && msg.sources.length" class="sources">
-          <div v-for="(source, i) in msg.sources" :key="i" class="source-item">
-            <div>来源：{{ source.filename }}</div>
-            <div>第 {{ source.page + 1 }} 页</div>
-            <div class="source-content">{{ source.content }}</div>
+          <button @click="uploadFile" :disabled="uploading">
+            {{ uploading ? '上传中...' : '上传文件' }}
+          </button>
+        </div>
+
+        <!-- 文件列表 -->
+        <div class="document-list">
+          <div v-for="doc in documents" :key="doc.file_hash" class="document-item">
+            <div class="document-name">{{ doc.filename }}</div>
+
+            <button class="delete-btn" @click="deleteDocument(doc.file_hash)">
+              删除
+            </button>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- 文件上传区域 -->
-    <div class="upload-box">
-      <input type="file" @change="handleFileChange" />
+      <!-- 聊天区域 -->
+      <div class="chat-wrapper">
+        <!-- 聊天框 -->
+        <div ref="chatBox" class="chat-box">
+          <!-- 循环渲染消息 -->
+          <div v-for="(msg, index) in messages" :key="index" class="message">
+            <!-- 用户消息 -->
+            <div v-if="msg.role === 'user'" class="user-row">
+              <div class="user-message">{{ msg.content }}</div>
+            </div>
 
-      <button @click="uploadFile" :disabled="uploading">
-        {{ uploading ? '上传中...' : '上传文件' }}
-      </button>
-    </div>
-    <!-- 输入区域 -->
-    <div class="input-box">
-      <!-- v-model 双向绑定 -->
-      <input v-model="question" placeholder="请输入问题" @keyup.enter="sendMessage" />
+            <!-- AI 消息 -->
+            <div v-else class="ai-row">
+              <div class="ai-message">{{ msg.content }}</div>
+            </div>
 
-      <button @click="sendMessage" :disabled="loading">
-        {{ loading ? '思考中...' : '发送' }}
-      </button>
+            <!-- 来源 -->
+            <div v-if="msg.sources && msg.sources.length" class="sources">
+              <div v-for="(source, i) in msg.sources" :key="i" class="source-item">
+                <div>来源：{{ source.filename }}</div>
+                <div>第 {{ source.page + 1 }} 页</div>
+                <div class="source-content">{{ source.content }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 输入区域 -->
+        <div class="input-box">
+          <input v-model="question" placeholder="请输入问题" @keyup.enter="sendMessage" />
+
+          <button @click="sendMessage" :disabled="loading">
+            {{ loading ? '思考中...' : '发送' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -193,28 +259,107 @@ const handleFileChange = (event) => {
 /* 页面整体 */
 body {
   margin: 0;
-  background: #f5f5f5;
+  background: #f3f6fb;
   font-family: Arial;
 }
 
-/* 主容器 */
-.container {
-  width: 800px;
-  margin: 30px auto;
+* {
+  box-sizing: border-box;
 }
 
-/* 标题 */
-h1 {
-  text-align: center;
+.container {
+  width: 1400px;
+  margin: 20px auto;
+}
+
+.main-layout {
+  display: flex;
+  gap: 20px;
+  height: 90vh;
+}
+
+/* 左侧知识库 */
+.document-panel {
+  width: 300px;
+  background: white;
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+}
+
+.document-header {
+  margin-bottom: 20px;
+}
+
+.document-header h2 {
+  margin: 0;
+}
+
+/* 上传区域 */
+.upload-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.upload-box input {
+  width: 100%;
+}
+
+/* 文件列表 */
+.document-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* 文件项 */
+.document-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f7f8fa;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.document-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+/* 删除按钮 */
+.delete-btn {
+  width: 60px;
+  height: 32px;
+  background: #ff4d4f;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* 聊天区域 */
+.chat-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 聊天框 */
 .chat-box {
-  height: 600px;
+  flex: 1;
   background: white;
-  border-radius: 10px;
+  border-radius: 16px;
   padding: 20px;
   overflow-y: auto;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
 /* 单条消息 */
@@ -223,46 +368,38 @@ h1 {
 }
 
 /* 用户消息 */
+.user-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .user-message {
-  text-align: right;
-  color: blue;
+  max-width: 70%;
+  background: #1677ff;
+  color: white;
+  padding: 14px 18px;
+  border-radius: 16px;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
 /* AI 消息 */
+.ai-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
 .ai-message {
-  text-align: left;
-  color: green;
+  max-width: 70%;
+  background: #f5f5f5;
+  color: #333;
+  padding: 14px 18px;
+  border-radius: 16px;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
-/* 上传区域 */
-.upload-box {
-  display: flex;
-  align-items: center;
-  margin-bottom: 20px;
-  gap: 10px;
-}
-
-/* 输入区域 */
-.input-box {
-  display: flex;
-  margin-top: 20px;
-}
-
-/* 输入框 */
-input {
-  flex: 1;
-  height: 40px;
-  padding: 0 10px;
-  font-size: 16px;
-}
-
-/* 按钮 */
-button {
-  width: 100px;
-  margin-left: 10px;
-}
+/* 来源 */
 .sources {
   margin-top: 10px;
 }
@@ -278,5 +415,32 @@ button {
 .source-content {
   margin-top: 5px;
   color: #666;
+  line-height: 1.5;
+}
+
+/* 输入区域 */
+.input-box {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+input {
+  flex: 1;
+  height: 40px;
+  padding: 0 10px;
+  font-size: 16px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+}
+
+/* 按钮 */
+button {
+  width: 100px;
+  border: none;
+  border-radius: 10px;
+  background: #1677ff;
+  color: white;
+  cursor: pointer;
 }
 </style>
