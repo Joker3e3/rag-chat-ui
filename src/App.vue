@@ -4,9 +4,11 @@ import { ref } from 'vue'
 import { onMounted } from 'vue'
 
 import axios from 'axios'
-import {ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 onMounted(() => { loadDocuments() })
+
+let pollingTimer = null
 
 // 用户输入框内容
 const question = ref('')
@@ -16,6 +18,8 @@ const messages = ref([])
 
 // 知识库文件
 const documents = ref([])
+
+const fileInput = ref(null)
 
 // 是否正在加载
 const loading = ref(false)
@@ -55,7 +59,11 @@ const uploadFile = async () => {
     ElMessage.error(errMsg)
   }
   uploading.value = false
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
   await loadDocuments()
+  startPollingDocuments()
 }
 
 // 获取文件列表
@@ -74,6 +82,7 @@ const deleteDocument = async (fileHash) => {
     type: 'warning',
     confirmButtonText: '确认',
     cancelButtonText: '取消',
+    closeOnClickModal: false,
   }).then(async () => {
     try {
       await axios.delete('http://127.0.0.1:8000/delete_document', {
@@ -183,6 +192,25 @@ const sendMessage = async () => {
 const handleFileChange = (event) => {
   selectedFile.value = event.target.files[0]
 }
+
+const hasProcessingDocument = () => {
+  return documents.value.some(doc => doc.status === 'processing')
+}
+
+const startPollingDocuments = () => {
+  if (pollingTimer) {
+    return
+  }
+
+  pollingTimer = setInterval(async () => {
+    await loadDocuments()
+
+    if (!hasProcessingDocument()) {
+      clearInterval(pollingTimer)
+      pollingTimer = null
+    }
+  }, 2000)
+}
 </script>
 
 <template>
@@ -196,7 +224,7 @@ const handleFileChange = (event) => {
 
         <!-- 上传区域 -->
         <div class="upload-box">
-          <input type="file" @change="handleFileChange" />
+          <input ref="fileInput" type="file" @change="handleFileChange" />
 
           <button @click="uploadFile" :disabled="uploading">
             {{ uploading ? '上传中...' : '上传文件' }}
@@ -206,8 +234,20 @@ const handleFileChange = (event) => {
         <!-- 文件列表 -->
         <div class="document-list">
           <div v-for="doc in documents" :key="doc.file_hash" class="document-item">
-            <div class="document-name">{{ doc.filename }}</div>
-
+            <div class="document-left">
+              <div class="document-name">{{ doc.filename }}</div>
+              <div class="document-status">
+                <span v-if="doc.status === 'processing'" class="status processing">
+                  处理中
+                </span>
+                <span v-else-if="doc.status === 'ready'" class="status ready">
+                  已完成
+                </span>
+                <span v-else-if="doc.status === 'failed'" class="status failed">
+                  失败
+                </span>
+              </div>
+            </div>
             <button class="delete-btn" @click="deleteDocument(doc.file_hash)">
               删除
             </button>
@@ -313,36 +353,92 @@ body {
 .document-list {
   flex: 1;
   overflow-y: auto;
+  padding-right: 4px;
 }
 
-/* 文件项 */
 .document-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   background: #f7f8fa;
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  transition: all 0.2s;
+}
+
+.document-item:hover {
+  background: #f0f2f5;
+  border-color: #d9d9d9;
+}
+
+.document-left {
+  flex: 1;
+  min-width: 0;
 }
 
 .document-name {
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
+  font-weight: 500;
+  color: #303133;
+  margin-bottom: 6px;
 }
 
-/* 删除按钮 */
+.document-status {
+  display: flex;
+  align-items: center;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.status.processing {
+  background: #fff7e6;
+  color: #d48806;
+}
+
+.status.ready {
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.status.failed {
+  background: #fff1f0;
+  color: #cf1322;
+}
+
 .delete-btn {
-  width: 60px;
-  height: 32px;
+  width: 64px;
+  height: 34px;
   background: #ff4d4f;
   color: white;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
+  font-size: 13px;
   cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.delete-btn:hover {
+  background: #ff7875;
+}
+
+.delete-btn:active {
+  transform: scale(0.96);
 }
 
 /* 聊天区域 */
