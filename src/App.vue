@@ -6,6 +6,8 @@ import { onMounted } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
+
 onMounted(() => { loadDocuments() })
 
 let pollingTimer = null
@@ -50,7 +52,7 @@ const uploadFile = async () => {
     const formData = new FormData()
     formData.append('user_id', 'Joker3e')
     formData.append('file', selectedFile.value)
-    const response = await axios.post('http://127.0.0.1:8000/upload', formData)
+    const response = await axios.post(`${API_BASE_URL}/upload`, formData)
     ElMessage.success(response.data.message)
     selectedFile.value = null
   } catch (error) {
@@ -69,7 +71,7 @@ const uploadFile = async () => {
 // 获取文件列表
 const loadDocuments = async () => {
   try {
-    const response = await axios.get('http://127.0.0.1:8000/documents', { params: { user_id: 'Joker3e' } })
+    const response = await axios.get(`${API_BASE_URL}/documents`, { params: { user_id: 'Joker3e' } })
     documents.value = response.data
   } catch (error) {
     console.error(error)
@@ -85,7 +87,7 @@ const deleteDocument = async (fileHash) => {
     closeOnClickModal: false,
   }).then(async () => {
     try {
-      await axios.delete('http://127.0.0.1:8000/delete_document', {
+      await axios.delete(`${API_BASE_URL}/delete_document`, {
         params: { user_id: 'Joker3e', file_hash: fileHash }
       })
       await loadDocuments()
@@ -127,7 +129,7 @@ const sendMessage = async () => {
     }
     messages.value.push(aiMessage)
 
-    const response = await fetch('http://127.0.0.1:8000/chat_stream', {
+    const response = await fetch(`${API_BASE_URL}/chat_stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -162,14 +164,14 @@ const sendMessage = async () => {
       })
       await scrollToBottom()
     }
-    const sourcesAndHistory = await axios.post('http://127.0.0.1:8000/sources_history', requestData)
+    const sourcesAndHistory = await axios.post(`${API_BASE_URL}/sources_history`, requestData)
     const lastIndex = messages.value.length - 1
     const last = messages.value[lastIndex]
     messages.value.splice(lastIndex, 1, {
       ...last,
       sources: sourcesAndHistory.data.sources,
     })
-    // const response = await axios.post('http://127.0.0.1:8000/ask', requestData)
+    // const response = await axios.post(`${API_BASE_URL}/ask`, requestData)
 
     // 把 AI 回复加入聊天列表
     // messages.value.push({
