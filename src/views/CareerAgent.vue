@@ -7,6 +7,7 @@ const CAREER_AGENT_URL = 'http://127.0.0.1:8010/career_agent/analyze'
 const md = new MarkdownIt()
 
 const sessionId = ref('user_001')
+const userId = ref('Joker3e')
 const jobDescription = ref('')
 const resumeText = ref('')
 const report = ref('')
@@ -25,6 +26,7 @@ const analyzeCareer = async () => {
   try {
     const response = await axios.post(CAREER_AGENT_URL, {
       session_id: sessionId.value,
+      user_id: userId.value,
       job_description: jobDescription.value,
       resume_text: resumeText.value,
     })
@@ -45,6 +47,11 @@ const analyzeCareer = async () => {
       <div class="career-field">
         <label for="session-id">session_id</label>
         <input id="session-id" v-model="sessionId" type="text" />
+      </div>
+
+      <div class="career-field career-user-field">
+        <label for="user-id">user_id</label>
+        <input id="user-id" v-model="userId" type="text" />
       </div>
 
       <div class="career-grid">
@@ -105,6 +112,25 @@ const analyzeCareer = async () => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.career-user-field {
+  margin-top: 0;
+}
+
+.career-form > .career-field:first-child,
+.career-form > .career-user-field {
+  float: left;
+  width: calc(50% - 10px);
+}
+
+.career-form > .career-user-field {
+  float: right;
+  margin-left: 20px;
+}
+
+.career-form > .career-user-field + .career-grid {
+  clear: both;
 }
 
 .career-field label {
