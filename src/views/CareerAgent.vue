@@ -4,6 +4,7 @@ import axios from 'axios'
 import MarkdownIt from 'markdown-it'
 
 const CAREER_AGENT_URL = 'http://127.0.0.1:8010/career_agent/analyze'
+const CAREER_CONFIRM_URL = 'http://127.0.0.1:8010/career_agent/confirm'
 const md = new MarkdownIt()
 
 const sessionId = ref('user_001')
@@ -12,15 +13,41 @@ const jobDescription = ref('')
 const resumeText = ref('')
 const report = ref('')
 const loading = ref(false)
+const analyzeResponded = ref(false)
 const error = ref('')
+const workflowId = ref('')
+const confirmationId = ref('')
+const workflowStatus = ref('')
+const confirming = ref(false)
+const confirmationStatus = ref('')
+const confirmationMessage = ref('')
+const confirmationWorkflowStatus = ref('')
+const confirmationError = ref('')
+
+const shouldShowConfirmation = computed(() => {
+  return workflowStatus.value === 'waiting_human_confirmation' && workflowId.value && confirmationId.value
+})
 
 const renderedReport = computed(() => {
   return md.render(report.value || '')
 })
 
+const resetConfirmation = () => {
+  workflowId.value = ''
+  confirmationId.value = ''
+  workflowStatus.value = ''
+  confirming.value = false
+  confirmationStatus.value = ''
+  confirmationMessage.value = ''
+  confirmationWorkflowStatus.value = ''
+  confirmationError.value = ''
+}
+
 const analyzeCareer = async () => {
   error.value = ''
   report.value = ''
+  analyzeResponded.value = false
+  resetConfirmation()
   loading.value = true
 
   try {
@@ -31,12 +58,48 @@ const analyzeCareer = async () => {
       resume_text: resumeText.value,
     })
 
-    report.value = response.data.report || ''
+    analyzeResponded.value = true
+    loading.value = false
+
+    const data = response.data || {}
+    report.value = data.report || ''
+    workflowId.value = data.workflow_id || ''
+    confirmationId.value = data.confirmation_id || ''
+    workflowStatus.value = data.workflow_status || ''
   } catch (err) {
     console.error(err)
     error.value = err.response?.data?.detail || err.message || '分析失败，请检查后端服务'
   } finally {
     loading.value = false
+  }
+}
+
+const confirmCareer = async (action) => {
+  if (confirming.value || !workflowId.value || !confirmationId.value) {
+    return
+  }
+
+  confirmationError.value = ''
+  confirming.value = true
+
+  try {
+    const response = await axios.post(CAREER_CONFIRM_URL, {
+      workflow_id: workflowId.value,
+      confirmation_id: confirmationId.value,
+      action,
+    })
+
+    confirmationStatus.value = response.data.confirmation_status || ''
+    confirmationMessage.value = response.data.confirmation_message || ''
+    confirmationWorkflowStatus.value = response.data.workflow_status || ''
+    workflowStatus.value = response.data.workflow_status || workflowStatus.value
+    workflowId.value = response.data.workflow_id || workflowId.value
+    confirmationId.value = response.data.confirmation_id || confirmationId.value
+  } catch (err) {
+    console.error(err)
+    confirmationError.value = err.response?.data?.detail || err.message || '确认请求失败，请检查后端服务'
+  } finally {
+    confirming.value = false
   }
 }
 </script>
@@ -85,9 +148,47 @@ const analyzeCareer = async () => {
 
     <div class="career-report">
       <div class="career-report-title">分析报告</div>
-      <div v-if="loading" class="career-empty">正在生成报告...</div>
+      <div v-if="loading && !analyzeResponded && !report" class="career-empty">正在生成报告...</div>
       <div v-else-if="report" class="career-report-content" v-html="renderedReport"></div>
-      <div v-else class="career-empty">报告将在分析完成后显示在这里</div>
+      <div v-if="shouldShowConfirmation" class="career-confirm-panel">
+        <div class="career-confirm-title">人工确认</div>
+        <div class="career-confirm-actions">
+          <button
+            class="career-confirm-button"
+            :disabled="confirming"
+            @click="confirmCareer('approve')"
+          >
+            {{ confirming ? '提交中...' : '确认使用' }}
+          </button>
+          <button
+            class="career-confirm-button career-confirm-secondary"
+            :disabled="confirming"
+            @click="confirmCareer('revise')"
+          >
+            需要修改
+          </button>
+          <button
+            class="career-confirm-button career-confirm-danger"
+            :disabled="confirming"
+            @click="confirmCareer('reject')"
+          >
+            暂不使用
+          </button>
+        </div>
+        <div v-if="confirmationError" class="career-confirm-error">{{ confirmationError }}</div>
+      </div>
+      <div v-if="confirmationStatus || confirmationMessage || confirmationWorkflowStatus" class="career-confirm-result">
+        <div v-if="confirmationStatus">
+          <span>confirmation_status:</span> {{ confirmationStatus }}
+        </div>
+        <div v-if="confirmationMessage">
+          <span>confirmation_message:</span> {{ confirmationMessage }}
+        </div>
+        <div v-if="confirmationWorkflowStatus">
+          <span>workflow_status:</span> {{ confirmationWorkflowStatus }}
+        </div>
+      </div>
+      <div v-if="!loading && !report" class="career-empty">报告将在分析完成后显示在这里</div>
     </div>
   </div>
 </template>
@@ -280,6 +381,68 @@ const analyzeCareer = async () => {
 .career-empty {
   color: #909399;
   line-height: 1.7;
+}
+
+.career-confirm-panel,
+.career-confirm-result {
+  margin-top: 18px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: #f9fafc;
+  padding: 14px;
+}
+
+.career-confirm-title {
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.career-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.career-confirm-button {
+  min-width: 96px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: #1677ff;
+  color: #fff;
+  cursor: pointer;
+}
+
+.career-confirm-secondary {
+  background: #e6a23c;
+}
+
+.career-confirm-danger {
+  background: #f56c6c;
+}
+
+.career-confirm-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.career-confirm-error {
+  margin-top: 10px;
+  color: #cf1322;
+  line-height: 1.5;
+}
+
+.career-confirm-result {
+  display: grid;
+  gap: 8px;
+  color: #303133;
+  line-height: 1.5;
+}
+
+.career-confirm-result span {
+  font-weight: 700;
 }
 
 @media (max-width: 900px) {
