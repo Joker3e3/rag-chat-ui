@@ -26,6 +26,7 @@ const workflowDuration = ref('')
 const executionStatus = ref('')
 const traceExpanded = ref(false)
 const traceLoaded = ref(false)
+const traceDirty = ref(false)
 const traceLoading = ref(false)
 const traceError = ref('')
 const traceSteps = ref([])
@@ -60,6 +61,7 @@ const renderedReport = computed(() => {
 const resetTrace = () => {
   traceExpanded.value = false
   traceLoaded.value = false
+  traceDirty.value = false
   traceLoading.value = false
   traceError.value = ''
   traceSteps.value = []
@@ -91,9 +93,15 @@ const resetConfirmation = () => {
 }
 
 const applyRunStatus = (data = {}) => {
+  const nextStatus = data.status || ''
+
+  if (nextStatus && workflowStatus.value && nextStatus !== workflowStatus.value) {
+    traceDirty.value = true
+  }
+
   workflowId.value = data.workflow_id || workflowId.value
-  workflowStatus.value = data.status || ''
-  executionStatus.value = data.status || ''
+  workflowStatus.value = nextStatus
+  executionStatus.value = nextStatus
   matchScore.value = data.match_score ?? ''
 
   if (data.status === 'queued' || data.status === 'running') {
@@ -213,6 +221,11 @@ const confirmCareer = async (action) => {
     workflowId.value = response.data.workflow_id || workflowId.value
     confirmationId.value = response.data.confirmation_id || confirmationId.value
     executionStatus.value = response.data.execution_status || workflowStatus.value || executionStatus.value
+    traceDirty.value = true
+
+    if (traceExpanded.value) {
+      await loadTrace()
+    }
   } catch (err) {
     console.error(err)
     confirmationError.value = err.response?.data?.detail || err.message || '确认请求失败，请检查后端服务。'
@@ -237,6 +250,7 @@ const loadTrace = async () => {
       return Array.isArray(step.tool_calls) ? step.tool_calls : []
     })
     traceLoaded.value = true
+    traceDirty.value = false
   } catch (err) {
     console.error(err)
     traceError.value = err.response?.data?.detail || err.message || '执行链路加载失败，请稍后重试。'
@@ -248,7 +262,12 @@ const loadTrace = async () => {
 const toggleTrace = async () => {
   traceExpanded.value = !traceExpanded.value
 
-  if (traceExpanded.value && workflowId.value && !traceLoaded.value && !traceLoading.value) {
+  if (
+    traceExpanded.value &&
+    workflowId.value &&
+    (!traceLoaded.value || traceDirty.value) &&
+    !traceLoading.value
+  ) {
     await loadTrace()
   }
 }
