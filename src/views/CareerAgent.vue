@@ -1,12 +1,12 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 import MarkdownIt from 'markdown-it'
 import TracePanel from '../components/TracePanel.vue'
 
 const CAREER_AGENT_URL = 'http://127.0.0.1:8010/career_agent/analyze'
 const CAREER_CONFIRM_URL = 'http://127.0.0.1:8010/career_agent/confirm'
-const CAREER_TRACE_BASE_URL = 'http://127.0.0.1:8010/career_agent/runs'
+const CAREER_RUNS_BASE_URL = 'http://127.0.0.1:8010/career_agent/runs'
 const md = new MarkdownIt()
 
 const sessionId = ref('user_001')
@@ -14,6 +14,8 @@ const userId = ref('Joker3e')
 const jobDescription = ref('')
 const resumeText = ref('')
 const report = ref('')
+const matchScore = ref('')
+const statusMessage = ref('')
 const loading = ref(false)
 const analyzeResponded = ref(false)
 const error = ref('')
@@ -33,6 +35,8 @@ const confirmationStatus = ref('')
 const confirmationMessage = ref('')
 const confirmationWorkflowStatus = ref('')
 const confirmationError = ref('')
+let pollingTimer = null
+let pollingRequestInFlight = false
 
 const shouldShowConfirmation = computed(() => {
   return workflowStatus.value === 'waiting_human_confirmation' && workflowId.value && confirmationId.value
@@ -53,18 +57,6 @@ const renderedReport = computed(() => {
   return md.render(report.value || '')
 })
 
-const formatDurationMs = (durationMs) => {
-  if (durationMs === '' || durationMs === null || durationMs === undefined) {
-    return ''
-  }
-
-  if (typeof durationMs === 'number') {
-    return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${durationMs}ms`
-  }
-
-  return durationMs
-}
-
 const resetTrace = () => {
   traceExpanded.value = false
   traceLoaded.value = false
@@ -74,26 +66,92 @@ const resetTrace = () => {
   traceToolCalls.value = []
 }
 
-const applyWorkflowInfo = (data = {}) => {
-  workflowId.value = data.workflow_id || ''
-  confirmationId.value = data.confirmation_id || ''
-  workflowStatus.value = data.workflow_status || ''
-  workflowDuration.value = formatDurationMs(data.total_duration_ms)
-  executionStatus.value = data.execution_status || data.workflow_status || ''
+const stopPolling = () => {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
 }
 
 const resetConfirmation = () => {
+  stopPolling()
   workflowId.value = ''
   confirmationId.value = ''
   workflowStatus.value = ''
   workflowDuration.value = ''
   executionStatus.value = ''
+  matchScore.value = ''
+  statusMessage.value = ''
   resetTrace()
   confirming.value = false
   confirmationStatus.value = ''
   confirmationMessage.value = ''
   confirmationWorkflowStatus.value = ''
   confirmationError.value = ''
+}
+
+const applyRunStatus = (data = {}) => {
+  workflowId.value = data.workflow_id || workflowId.value
+  workflowStatus.value = data.status || ''
+  executionStatus.value = data.status || ''
+  matchScore.value = data.match_score ?? ''
+
+  if (data.status === 'queued' || data.status === 'running') {
+    loading.value = true
+    statusMessage.value = '分析任务已提交，正在后台处理中。'
+    return
+  }
+
+  if (data.status === 'waiting_human_confirmation') {
+    stopPolling()
+    loading.value = false
+    report.value = data.final_report || ''
+    confirmationId.value = data.confirmation?.confirmation_id || ''
+    confirmationStatus.value = data.confirmation?.status || ''
+    confirmationMessage.value = data.confirmation?.message || ''
+    statusMessage.value = '分析已完成，等待人工确认。'
+    return
+  }
+
+  if (data.status === 'completed') {
+    stopPolling()
+    loading.value = false
+    statusMessage.value = '流程已完成。'
+    report.value = data.final_report || report.value
+    return
+  }
+
+  if (data.status === 'failed') {
+    stopPolling()
+    loading.value = false
+    error.value = data.error_message || '分析流程执行失败。'
+    statusMessage.value = ''
+  }
+}
+
+const pollRunStatus = async () => {
+  if (!workflowId.value || pollingRequestInFlight) {
+    return
+  }
+
+  pollingRequestInFlight = true
+
+  try {
+    const response = await axios.get(`${CAREER_RUNS_BASE_URL}/${workflowId.value}`)
+    applyRunStatus(response.data || {})
+  } catch (err) {
+    console.error(err)
+    stopPolling()
+    loading.value = false
+    error.value = err.response?.data?.detail || err.message || '查询分析任务状态失败，请稍后重试。'
+  } finally {
+    pollingRequestInFlight = false
+  }
+}
+
+const startPolling = () => {
+  stopPolling()
+  pollingTimer = setInterval(pollRunStatus, 2000)
 }
 
 const analyzeCareer = async () => {
@@ -114,12 +172,21 @@ const analyzeCareer = async () => {
     analyzeResponded.value = true
 
     const data = response.data || {}
-    report.value = data.report || ''
-    applyWorkflowInfo(data)
+    workflowId.value = data.workflow_id || ''
+    workflowStatus.value = data.workflow_status || 'queued'
+    executionStatus.value = workflowStatus.value
+    statusMessage.value = data.message || '分析任务已提交，正在后台处理中。'
+    loading.value = true
+
+    if (workflowId.value) {
+      startPolling()
+    } else {
+      loading.value = false
+      error.value = '分析任务提交失败：后端未返回 workflow_id。'
+    }
   } catch (err) {
     console.error(err)
     error.value = err.response?.data?.detail || err.message || '分析失败，请检查后端服务。'
-  } finally {
     loading.value = false
   }
 }
@@ -163,7 +230,7 @@ const loadTrace = async () => {
   traceLoading.value = true
 
   try {
-    const response = await axios.get(`${CAREER_TRACE_BASE_URL}/${workflowId.value}/trace`)
+    const response = await axios.get(`${CAREER_RUNS_BASE_URL}/${workflowId.value}/trace`)
     const data = response.data || {}
     traceSteps.value = Array.isArray(data.steps) ? data.steps : []
     traceToolCalls.value = traceSteps.value.flatMap((step) => {
@@ -185,6 +252,10 @@ const toggleTrace = async () => {
     await loadTrace()
   }
 }
+
+onUnmounted(() => {
+  stopPolling()
+})
 </script>
 
 <template>
@@ -244,9 +315,17 @@ const toggleTrace = async () => {
         </div>
       </div>
 
-      <div v-if="loading && !analyzeResponded && !report" class="career-empty">正在生成报告...</div>
+      <div v-if="statusMessage" class="career-status">
+        <span>{{ workflowStatus || 'submitted' }}</span>
+        {{ statusMessage }}
+      </div>
+      <div v-if="matchScore !== ''" class="match-score">
+        <span>Match Score</span>
+        <strong>{{ matchScore }}</strong>
+      </div>
+      <div v-if="loading && !analyzeResponded && !report" class="career-empty">正在提交分析任务...</div>
       <div v-else-if="report" class="career-report-content" v-html="renderedReport"></div>
-      <div v-if="!loading && !report" class="career-empty">报告将在分析完成后显示在这里。</div>
+      <div v-if="!loading && !report && !statusMessage && !error" class="career-empty">报告将在分析完成后显示在这里。</div>
 
       <div v-if="shouldShowConfirmation" class="career-confirm-panel">
         <div>
@@ -568,6 +647,51 @@ const toggleTrace = async () => {
 .career-empty {
   color: #667085;
   line-height: 1.7;
+}
+
+.career-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  line-height: 1.5;
+  padding: 12px;
+}
+
+.career-status span {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 8px;
+}
+
+.match-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  border: 1px solid #dcfce7;
+  border-radius: 10px;
+  background: #f0fdf4;
+  color: #166534;
+  padding: 10px 12px;
+}
+
+.match-score span {
+  color: #15803d;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.match-score strong {
+  font-size: 20px;
 }
 
 .career-confirm-panel,
