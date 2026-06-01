@@ -24,6 +24,7 @@ const confirmationId = ref('')
 const workflowStatus = ref('')
 const workflowDuration = ref('')
 const executionStatus = ref('')
+const confirmation = ref(null)
 const traceExpanded = ref(false)
 const traceLoaded = ref(false)
 const traceDirty = ref(false)
@@ -31,6 +32,12 @@ const traceLoading = ref(false)
 const traceError = ref('')
 const traceSteps = ref([])
 const traceToolCalls = ref([])
+const historyExpanded = ref(false)
+const historyLoaded = ref(false)
+const historyLoading = ref(false)
+const historyItems = ref([])
+const historyError = ref('')
+const selectedHistoryWorkflowId = ref('')
 const confirming = ref(false)
 const confirmationStatus = ref('')
 const confirmationMessage = ref('')
@@ -58,6 +65,25 @@ const renderedReport = computed(() => {
   return md.render(report.value || '')
 })
 
+const formatHistoryDate = (value) => {
+  if (!value) {
+    return ''
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 const resetTrace = () => {
   traceExpanded.value = false
   traceLoaded.value = false
@@ -82,8 +108,10 @@ const resetConfirmation = () => {
   workflowStatus.value = ''
   workflowDuration.value = ''
   executionStatus.value = ''
+  confirmation.value = null
   matchScore.value = ''
   statusMessage.value = ''
+  selectedHistoryWorkflowId.value = ''
   resetTrace()
   confirming.value = false
   confirmationStatus.value = ''
@@ -94,6 +122,7 @@ const resetConfirmation = () => {
 
 const applyRunStatus = (data = {}) => {
   const nextStatus = data.status || ''
+  const nextConfirmation = data.confirmation || null
 
   if (nextStatus && workflowStatus.value && nextStatus !== workflowStatus.value) {
     traceDirty.value = true
@@ -103,6 +132,14 @@ const applyRunStatus = (data = {}) => {
   workflowStatus.value = nextStatus
   executionStatus.value = nextStatus
   matchScore.value = data.match_score ?? ''
+  confirmation.value = nextConfirmation
+
+  if (nextStatus !== 'waiting_human_confirmation') {
+    confirmationId.value = ''
+    confirmationStatus.value = nextConfirmation?.status || ''
+    confirmationMessage.value = nextConfirmation?.message || ''
+    confirmationWorkflowStatus.value = ''
+  }
 
   if (data.status === 'queued' || data.status === 'running') {
     loading.value = true
@@ -114,9 +151,9 @@ const applyRunStatus = (data = {}) => {
     stopPolling()
     loading.value = false
     report.value = data.final_report || ''
-    confirmationId.value = data.confirmation?.confirmation_id || ''
-    confirmationStatus.value = data.confirmation?.status || ''
-    confirmationMessage.value = data.confirmation?.message || ''
+    confirmationId.value = nextConfirmation?.confirmation_id || data.confirmation_id || ''
+    confirmationStatus.value = nextConfirmation?.status || ''
+    confirmationMessage.value = nextConfirmation?.message || ''
     statusMessage.value = '分析已完成，等待人工确认。'
     return
   }
@@ -137,8 +174,8 @@ const applyRunStatus = (data = {}) => {
   }
 }
 
-const pollRunStatus = async () => {
-  if (!workflowId.value || pollingRequestInFlight) {
+const fetchWorkflowStatus = async ({ force = false } = {}) => {
+  if (!workflowId.value || (pollingRequestInFlight && !force)) {
     return
   }
 
@@ -147,19 +184,99 @@ const pollRunStatus = async () => {
   try {
     const response = await axios.get(`${CAREER_RUNS_BASE_URL}/${workflowId.value}`)
     applyRunStatus(response.data || {})
+    return response.data || {}
   } catch (err) {
     console.error(err)
     stopPolling()
     loading.value = false
     error.value = err.response?.data?.detail || err.message || '查询分析任务状态失败，请稍后重试。'
+    throw err
   } finally {
     pollingRequestInFlight = false
+  }
+}
+
+const pollRunStatus = async () => {
+  try {
+    await fetchWorkflowStatus()
+  } catch {
+    // fetchWorkflowStatus already updates the page error state.
   }
 }
 
 const startPolling = () => {
   stopPolling()
   pollingTimer = setInterval(pollRunStatus, 2000)
+}
+
+const loadHistory = async () => {
+  historyError.value = ''
+  historyLoading.value = true
+
+  try {
+    const response = await axios.get(CAREER_RUNS_BASE_URL, {
+      params: { user_id: userId.value },
+    })
+    const data = response.data || {}
+    historyItems.value = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+    historyLoaded.value = true
+  } catch (err) {
+    console.error(err)
+    historyError.value = err.response?.data?.detail || err.message || '历史记录加载失败，请稍后重试。'
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+const toggleHistory = async () => {
+  historyExpanded.value = !historyExpanded.value
+
+  if (historyExpanded.value && !historyLoaded.value && !historyLoading.value) {
+    await loadHistory()
+  }
+}
+
+const resetWorkflowForHistory = (item) => {
+  stopPolling()
+  error.value = ''
+  report.value = ''
+  matchScore.value = ''
+  statusMessage.value = '正在加载历史分析记录。'
+  confirmation.value = null
+  confirmationId.value = ''
+  confirmationStatus.value = ''
+  confirmationMessage.value = ''
+  confirmationWorkflowStatus.value = ''
+  confirmationError.value = ''
+  workflowId.value = item.workflow_id || ''
+  workflowStatus.value = item.status || ''
+  executionStatus.value = item.status || ''
+  traceExpanded.value = false
+  traceLoaded.value = false
+  traceDirty.value = true
+  traceLoading.value = false
+  traceError.value = ''
+  traceSteps.value = []
+  traceToolCalls.value = []
+}
+
+const selectHistoryItem = async (item) => {
+  if (!item?.workflow_id) {
+    return
+  }
+
+  selectedHistoryWorkflowId.value = item.workflow_id
+  resetWorkflowForHistory(item)
+
+  try {
+    await fetchWorkflowStatus({ force: true })
+
+    if (workflowStatus.value === 'queued' || workflowStatus.value === 'running') {
+      startPolling()
+    }
+  } catch {
+    // fetchWorkflowStatus already updates the page error state.
+  }
 }
 
 const analyzeCareer = async () => {
@@ -208,20 +325,19 @@ const confirmCareer = async (action) => {
   confirming.value = true
 
   try {
-    const response = await axios.post(CAREER_CONFIRM_URL, {
+    await axios.post(CAREER_CONFIRM_URL, {
       workflow_id: workflowId.value,
       confirmation_id: confirmationId.value,
       action,
     })
 
-    confirmationStatus.value = response.data.confirmation_status || ''
-    confirmationMessage.value = response.data.confirmation_message || ''
-    confirmationWorkflowStatus.value = response.data.workflow_status || ''
-    workflowStatus.value = response.data.workflow_status || workflowStatus.value
-    workflowId.value = response.data.workflow_id || workflowId.value
-    confirmationId.value = response.data.confirmation_id || confirmationId.value
-    executionStatus.value = response.data.execution_status || workflowStatus.value || executionStatus.value
+    statusMessage.value = '确认已提交，正在刷新流程状态。'
     traceDirty.value = true
+    await fetchWorkflowStatus({ force: true })
+
+    if (workflowStatus.value !== 'completed' && workflowStatus.value !== 'failed') {
+      startPolling()
+    }
 
     if (traceExpanded.value) {
       await loadTrace()
@@ -278,7 +394,37 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="career-page">
+  <div class="career-shell">
+    <aside class="history-sidebar" :class="{ 'history-expanded': historyExpanded }">
+      <button class="history-toggle" type="button" @click="toggleHistory">
+        <span>历史记录</span>
+        <strong>{{ historyExpanded ? '收起' : '展开' }}</strong>
+      </button>
+
+      <div v-if="historyExpanded" class="history-content">
+        <div v-if="historyLoading" class="history-empty">正在加载历史记录...</div>
+        <div v-else-if="historyError" class="history-error">{{ historyError }}</div>
+        <div v-else-if="historyLoaded && !historyItems.length" class="history-empty">暂无历史分析记录</div>
+        <div v-else class="history-list">
+          <button
+            v-for="item in historyItems"
+            :key="item.workflow_id"
+            class="history-item"
+            :class="{ 'history-item-active': item.workflow_id === selectedHistoryWorkflowId }"
+            type="button"
+            @click="selectHistoryItem(item)"
+          >
+            <span class="history-summary">{{ item.input_summary || '无摘要' }}</span>
+            <span class="history-meta">
+              <span class="history-status">{{ item.status }}</span>
+              <time>{{ formatHistoryDate(item.created_at) }}</time>
+            </span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="career-page">
     <section class="career-hero">
       <div>
         <p class="career-kicker">AI Career Analysis Agent</p>
@@ -394,11 +540,132 @@ onUnmounted(() => {
         @toggle="toggleTrace"
       />
     </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.career-shell {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.history-sidebar {
+  position: sticky;
+  top: 20px;
+  flex: 0 0 112px;
+  min-height: 52px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+  overflow: hidden;
+  transition: flex-basis 0.2s ease;
+}
+
+.history-sidebar.history-expanded {
+  flex-basis: 320px;
+}
+
+.history-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  border: none;
+  background: #fff;
+  color: #101828;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 0 14px;
+}
+
+.history-toggle strong {
+  color: #175cd3;
+  font-size: 12px;
+}
+
+.history-content {
+  border-top: 1px solid #eef0f4;
+  padding: 12px;
+}
+
+.history-list {
+  display: grid;
+  gap: 10px;
+  max-height: calc(90vh - 120px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.history-item {
+  width: 100%;
+  border: 1px solid #eef0f4;
+  border-radius: 12px;
+  background: #f9fafb;
+  color: #101828;
+  cursor: pointer;
+  padding: 12px;
+  text-align: left;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.history-item:hover,
+.history-item-active {
+  border-color: #1677ff;
+  background: #eff6ff;
+}
+
+.history-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.history-status {
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-weight: 800;
+  padding: 3px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-empty,
+.history-error {
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.history-error {
+  color: #b42318;
+}
+
 .career-page {
+  flex: 1;
+  min-width: 0;
   min-height: calc(90vh - 68px);
   display: flex;
   flex-direction: column;
@@ -790,6 +1057,16 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
+  .career-shell {
+    flex-direction: column;
+  }
+
+  .history-sidebar,
+  .history-sidebar.history-expanded {
+    position: static;
+    flex-basis: auto;
+    width: 100%;
+  }
 
   .career-hero,
   .career-report-header,
