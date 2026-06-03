@@ -126,6 +126,23 @@ const resetConfirmation = () => {
   confirmationError.value = ''
 }
 
+const updateHistoryItemStatus = (nextWorkflowId, nextStatus) => {
+  if (!nextWorkflowId || !nextStatus) {
+    return
+  }
+
+  historyItems.value = historyItems.value.map((item) => {
+    if (item.workflow_id !== nextWorkflowId) {
+      return item
+    }
+
+    return {
+      ...item,
+      status: nextStatus,
+    }
+  })
+}
+
 const applyRunStatus = (data = {}) => {
   const nextStatus = data.status || ''
   const nextConfirmation = data.confirmation || null
@@ -137,6 +154,7 @@ const applyRunStatus = (data = {}) => {
   workflowId.value = data.workflow_id || workflowId.value
   workflowStatus.value = nextStatus
   executionStatus.value = nextStatus
+  updateHistoryItemStatus(workflowId.value, nextStatus)
   matchScore.value = data.match_score ?? ''
   confirmation.value = nextConfirmation
 
