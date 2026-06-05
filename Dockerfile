@@ -8,7 +8,7 @@ RUN npm install
 
 COPY . .
 
-RUN npm config set registry https://registry.npmmirror.com && npm ci
+RUN npm run build
 
 
 FROM nginx:alpine

@@ -42,3 +42,100 @@ npm run build
 ```sh
 npm run lint
 ```
+
+## Docker Compose 部署
+
+### 环境变量配置
+
+主要配置前端访问后端服务的地址。
+
+Docker Compose 本地部署时，可在项目根目录创建 `.env`：
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+VITE_AGENT_BASE_URL=http://localhost:8001
+```
+
+其中：
+
+- `VITE_API_BASE_URL` 指向 Resume RAG Service，默认地址为 `http://localhost:8000`。
+- `VITE_AGENT_BASE_URL` 指向 Career Agent API，默认地址为 `http://localhost:8001`。
+
+### 构建与启动
+
+```bash
+docker compose up -d --build
+```
+
+### 查看服务状态
+
+```bash
+docker compose ps
+```
+
+### 查看日志
+
+```bash
+docker compose logs -f api
+docker compose logs -f worker
+```
+
+### 初始化数据库
+
+```bash
+docker compose exec api uv run python -m database.init_db
+```
+
+首次启动执行一次即可。
+
+### 访问地址
+
+Career Agent API：
+
+```text
+http://localhost:8001
+```
+
+Swagger：
+
+```text
+http://localhost:8001/docs
+```
+
+### 停止服务
+
+```bash
+docker compose down
+```
+
+保留数据库数据。
+
+### 删除所有数据
+
+```bash
+docker compose down -v
+```
+
+会删除 PostgreSQL Volume，需要重新初始化数据库。
+
+### 架构图
+
+```text
+Browser
+    │
+    ▼
+Frontend (Vue)
+localhost:5173
+    │
+    ▼
+Career Agent API
+localhost:8001
+    │
+    ├── PostgreSQL
+    ├── Redis
+    └── Celery Worker
+            │
+            ▼
+Resume RAG Service
+localhost:8000
+```

@@ -4,9 +4,10 @@ import axios from 'axios'
 import MarkdownIt from 'markdown-it'
 import TracePanel from '../components/TracePanel.vue'
 
-const CAREER_AGENT_URL = 'http://127.0.0.1:8010/career_agent/analyze'
-const CAREER_CONFIRM_URL = 'http://127.0.0.1:8010/career_agent/confirm'
-const CAREER_RUNS_BASE_URL = 'http://127.0.0.1:8010/career_agent/runs'
+const AGENT_BASE_URL = import.meta.env.VITE_AGENT_BASE_URL
+const CAREER_AGENT_URL = `${AGENT_BASE_URL}/career_agent/analyze`
+const CAREER_CONFIRM_URL = `${AGENT_BASE_URL}/career_agent/confirm`
+const CAREER_RUNS_BASE_URL = `${AGENT_BASE_URL}/career_agent/runs`
 const md = new MarkdownIt()
 
 const sessionId = ref('user_001')
