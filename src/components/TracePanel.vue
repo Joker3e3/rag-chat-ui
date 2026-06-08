@@ -227,6 +227,47 @@ const formatItemDuration = (item) => {
   return '-'
 }
 
+const toTokenNumber = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const numberValue = typeof value === 'number' ? value : Number(String(value).replace(/,/g, ''))
+
+  return Number.isFinite(numberValue) ? numberValue : null
+}
+
+const formatTokenValue = (value) => {
+  const numberValue = toTokenNumber(value)
+
+  if (numberValue === null) {
+    return '-'
+  }
+
+  return Math.round(numberValue).toLocaleString('en-US')
+}
+
+const getTokenInfo = (step) => {
+  const totalTokens = firstPresent(step, ['total_tokens'])
+  const inputTokens = firstPresent(step, ['input_tokens'])
+  const outputTokens = firstPresent(step, ['output_tokens'])
+  const modelName = firstText(step, ['model_name'], '')
+  const provider = firstText(step, ['provider'], '')
+
+  return {
+    hasTotal: totalTokens !== undefined && totalTokens !== null,
+    hasInputOutput:
+      (inputTokens !== undefined && inputTokens !== null) ||
+      (outputTokens !== undefined && outputTokens !== null),
+    total: formatTokenValue(totalTokens),
+    input: formatTokenValue(inputTokens),
+    output: formatTokenValue(outputTokens),
+    modelName,
+    provider,
+    rawTotal: toTokenNumber(totalTokens),
+  }
+}
+
 const sourceSteps = computed(() => {
   if (props.steps.length) {
     return props.steps
@@ -250,9 +291,22 @@ const normalizedSteps = computed(() => {
       status,
       tone: statusTone(status),
       duration: formatItemDuration(step),
+      token: getTokenInfo(step),
       raw: step,
     }
   })
+})
+
+const totalTokenStats = computed(() => {
+  const llmSteps = normalizedSteps.value.filter((step) => step.token.hasTotal)
+  const totalTokens = llmSteps.reduce((sum, step) => {
+    return sum + (step.token.rawTotal || 0)
+  }, 0)
+
+  return {
+    totalTokens,
+    llmNodeCount: llmSteps.length,
+  }
 })
 
 const topLevelToolCalls = computed(() => {
@@ -345,6 +399,12 @@ const hasDetails = computed(() => normalizedSteps.value.length > 0 || groupedToo
 
 const totalToolCalls = computed(() => allToolCalls.value.length)
 
+const formattedTotalTokens = computed(() => {
+  return totalTokenStats.value.llmNodeCount > 0
+    ? formatTokenValue(totalTokenStats.value.totalTokens)
+    : '-'
+})
+
 const rawTraceText = computed(() => {
   const raw = props.rawTrace || {
     workflow_id: props.workflowId,
@@ -392,6 +452,14 @@ const rawTraceText = computed(() => {
         <span>Tool Calls</span>
         <strong>{{ totalToolCalls }}</strong>
       </div>
+      <div class="summary-item">
+        <span>Total Tokens</span>
+        <strong>{{ formattedTotalTokens }}</strong>
+      </div>
+      <div class="summary-item">
+        <span>LLM Nodes</span>
+        <strong>{{ totalTokenStats.llmNodeCount }}</strong>
+      </div>
     </div>
 
     <button class="trace-toggle" type="button" @click="$emit('toggle')">
@@ -425,6 +493,26 @@ const rawTraceText = computed(() => {
                 </div>
                 <div class="trace-node-name" :title="step.name">{{ step.name }}</div>
                 <div class="trace-node-duration">{{ step.duration }}</div>
+                <div
+                  v-if="
+                    step.token.hasTotal ||
+                    step.token.hasInputOutput ||
+                    step.token.modelName ||
+                    step.token.provider
+                  "
+                  class="trace-node-token"
+                >
+                  <div v-if="step.token.hasTotal">Tokens: {{ step.token.total }}</div>
+                  <div v-if="step.token.hasInputOutput">
+                    In: {{ step.token.input }} / Out: {{ step.token.output }}
+                  </div>
+                  <div v-if="step.token.modelName" :title="step.token.modelName">
+                    Model: {{ step.token.modelName }}
+                  </div>
+                  <div v-if="step.token.provider" :title="step.token.provider">
+                    Provider: {{ step.token.provider }}
+                  </div>
+                </div>
               </article>
               <span v-if="index < normalizedSteps.length - 1" class="trace-arrow">→</span>
             </div>
@@ -596,11 +684,13 @@ const rawTraceText = computed(() => {
 
 .trace-node-card {
   width: 146px;
-  min-height: 88px;
+  height: 172px;
   border: 1px solid #d0d5dd;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
+  display: flex;
+  flex-direction: column;
   padding: 9px;
 }
 
@@ -658,6 +748,23 @@ const rawTraceText = computed(() => {
   color: #475467;
   font-size: 12px;
   font-weight: 800;
+}
+
+.trace-node-token {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.trace-node-token div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .trace-arrow {
