@@ -40,6 +40,7 @@ const historyLoading = ref(false)
 const historyItems = ref([])
 const historyError = ref('')
 const selectedHistoryWorkflowId = ref('')
+const selectedHistoryRun = ref(null)
 const confirming = ref(false)
 const confirmationStatus = ref('')
 const confirmationMessage = ref('')
@@ -66,6 +67,8 @@ const shouldShowTrace = computed(() => {
 const renderedReport = computed(() => {
   return md.render(report.value || '')
 })
+
+const isHistoryMode = computed(() => Boolean(selectedHistoryWorkflowId.value))
 
 const TRACE_STEP_KEYS = ['steps', 'workflow_steps', 'workflowSteps', 'nodes']
 const TRACE_TOOL_CALL_KEYS = ['tool_calls', 'toolCalls', 'tool_call_records', 'toolCallRecords']
@@ -132,6 +135,28 @@ const resetTrace = () => {
   traceRaw.value = null
 }
 
+const clearWorkflowViewState = () => {
+  stopPolling()
+  error.value = ''
+  report.value = ''
+  matchScore.value = ''
+  statusMessage.value = ''
+  workflowId.value = ''
+  confirmationId.value = ''
+  workflowStatus.value = ''
+  workflowDuration.value = ''
+  executionStatus.value = ''
+  confirmation.value = null
+  confirming.value = false
+  confirmationStatus.value = ''
+  confirmationMessage.value = ''
+  confirmationWorkflowStatus.value = ''
+  confirmationError.value = ''
+  loading.value = false
+  analyzeResponded.value = false
+  resetTrace()
+}
+
 const stopPolling = () => {
   if (pollingTimer) {
     clearInterval(pollingTimer)
@@ -150,6 +175,7 @@ const resetConfirmation = () => {
   matchScore.value = ''
   statusMessage.value = ''
   selectedHistoryWorkflowId.value = ''
+  selectedHistoryRun.value = null
   resetTrace()
   confirming.value = false
   confirmationStatus.value = ''
@@ -307,6 +333,7 @@ const resetWorkflowForHistory = (item) => {
   workflowId.value = item.workflow_id || ''
   workflowStatus.value = item.status || ''
   executionStatus.value = item.status || ''
+  jobDescription.value = item.input_summary || ''
   traceExpanded.value = false
   traceLoaded.value = false
   traceDirty.value = true
@@ -317,12 +344,25 @@ const resetWorkflowForHistory = (item) => {
   traceRaw.value = null
 }
 
+const exitHistoryMode = () => {
+  selectedHistoryWorkflowId.value = ''
+  selectedHistoryRun.value = null
+  jobDescription.value = ''
+  clearWorkflowViewState()
+}
+
 const selectHistoryItem = async (item) => {
   if (!item?.workflow_id) {
     return
   }
 
+  if (item.workflow_id === selectedHistoryWorkflowId.value) {
+    exitHistoryMode()
+    return
+  }
+
   selectedHistoryWorkflowId.value = item.workflow_id
+  selectedHistoryRun.value = item
   resetWorkflowForHistory(item)
 
   try {
@@ -337,6 +377,10 @@ const selectHistoryItem = async (item) => {
 }
 
 const analyzeCareer = async () => {
+  if (isHistoryMode.value) {
+    return
+  }
+
   error.value = ''
   report.value = ''
   analyzeResponded.value = false
@@ -511,9 +555,13 @@ onUnmounted(() => {
         </div>
 
         <div class="career-actions">
-          <button class="career-submit" :disabled="loading" @click="analyzeCareer">
-            {{ loading ? '分析中...' : '开始分析' }}
+          <button class="career-submit" :disabled="loading || isHistoryMode" @click="analyzeCareer">
+            {{ isHistoryMode ? '历史记录查看中' : loading ? '分析中...' : '开始分析' }}
           </button>
+        </div>
+
+        <div v-if="isHistoryMode" class="history-mode-hint">
+          当前正在查看历史分析记录，再次点击该记录可退出历史查看模式。
         </div>
 
         <div v-if="error" class="career-error">{{ error }}</div>
@@ -885,6 +933,17 @@ onUnmounted(() => {
 .career-submit:disabled {
   background: #a0cfff;
   cursor: not-allowed;
+}
+
+.history-mode-hint {
+  margin-top: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
 }
 
 .career-error {
