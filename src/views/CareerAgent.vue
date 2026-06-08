@@ -34,6 +34,7 @@ const traceError = ref('')
 const traceSteps = ref([])
 const traceToolCalls = ref([])
 const traceRaw = ref(null)
+const traceLoadedWorkflowId = ref('')
 const historyExpanded = ref(false)
 const historyLoaded = ref(false)
 const historyLoading = ref(false)
@@ -124,6 +125,56 @@ const historyStatusClass = (status) => {
   return `history-status-${normalizedStatus}`
 }
 
+const isQueuedStatus = (status) => {
+  return String(status || '').toLowerCase() === 'queued'
+}
+
+const shouldAutoLoadTraceStatus = (status) => {
+  const normalizedStatus = String(status || '').toLowerCase()
+
+  return (
+    normalizedStatus === 'completed' ||
+    normalizedStatus === 'complete' ||
+    normalizedStatus === 'waiting_human_confirmation'
+  )
+}
+
+const upsertHistoryItem = (nextItem) => {
+  if (!nextItem?.workflow_id) {
+    return
+  }
+
+  const existingIndex = historyItems.value.findIndex((item) => {
+    return item.workflow_id === nextItem.workflow_id
+  })
+
+  if (existingIndex === -1) {
+    historyItems.value = [nextItem, ...historyItems.value]
+    return
+  }
+
+  historyItems.value = historyItems.value.map((item, index) => {
+    if (index !== existingIndex) {
+      return item
+    }
+
+    return {
+      ...item,
+      ...nextItem,
+    }
+  })
+}
+
+const mergeHistoryItems = (nextItems) => {
+  const fetchedItems = Array.isArray(nextItems) ? nextItems : []
+  const fetchedIds = new Set(fetchedItems.map((item) => item.workflow_id).filter(Boolean))
+  const currentOnlyItems = historyItems.value.filter((item) => {
+    return item.workflow_id && !fetchedIds.has(item.workflow_id)
+  })
+
+  historyItems.value = [...currentOnlyItems, ...fetchedItems]
+}
+
 const resetTrace = () => {
   traceExpanded.value = false
   traceLoaded.value = false
@@ -133,6 +184,7 @@ const resetTrace = () => {
   traceSteps.value = []
   traceToolCalls.value = []
   traceRaw.value = null
+  traceLoadedWorkflowId.value = ''
 }
 
 const clearWorkflowViewState = () => {
@@ -240,7 +292,7 @@ const applyRunStatus = (data = {}) => {
     return
   }
 
-  if (data.status === 'completed') {
+  if (data.status === 'completed' || data.status === 'complete') {
     stopPolling()
     loading.value = false
     statusMessage.value = '流程已完成。'
@@ -265,8 +317,14 @@ const fetchWorkflowStatus = async ({ force = false } = {}) => {
 
   try {
     const response = await axios.get(`${CAREER_RUNS_BASE_URL}/${workflowId.value}`)
-    applyRunStatus(response.data || {})
-    return response.data || {}
+    const data = response.data || {}
+    applyRunStatus(data)
+
+    if (shouldAutoLoadTraceStatus(data.status || workflowStatus.value)) {
+      await ensureTraceLoaded({ expand: true })
+    }
+
+    return data
   } catch (err) {
     console.error(err)
     stopPolling()
@@ -300,7 +358,7 @@ const loadHistory = async () => {
       params: { user_id: userId.value },
     })
     const data = response.data || {}
-    historyItems.value = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+    mergeHistoryItems(Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : [])
     historyLoaded.value = true
   } catch (err) {
     console.error(err)
@@ -342,6 +400,7 @@ const resetWorkflowForHistory = (item) => {
   traceSteps.value = []
   traceToolCalls.value = []
   traceRaw.value = null
+  traceLoadedWorkflowId.value = ''
 }
 
 const exitHistoryMode = () => {
@@ -367,6 +426,10 @@ const selectHistoryItem = async (item) => {
 
   try {
     await fetchWorkflowStatus({ force: true })
+
+    if (!isQueuedStatus(item.status)) {
+      await ensureTraceLoaded({ expand: true })
+    }
 
     if (workflowStatus.value === 'queued' || workflowStatus.value === 'running') {
       startPolling()
@@ -399,12 +462,18 @@ const analyzeCareer = async () => {
 
     const data = response.data || {}
     workflowId.value = data.workflow_id || ''
-    workflowStatus.value = data.workflow_status || 'queued'
+    workflowStatus.value = data.workflow_status || data.status || 'queued'
     executionStatus.value = workflowStatus.value
     statusMessage.value = data.message || '分析任务已提交，正在后台处理中。'
     loading.value = true
 
     if (workflowId.value) {
+      upsertHistoryItem({
+        workflow_id: workflowId.value,
+        status: workflowStatus.value,
+        input_summary: data.input_summary || jobDescription.value,
+        created_at: data.created_at || new Date().toISOString(),
+      })
       startPolling()
     } else {
       loading.value = false
@@ -436,7 +505,11 @@ const confirmCareer = async (action) => {
     traceDirty.value = true
     await fetchWorkflowStatus({ force: true })
 
-    if (workflowStatus.value !== 'completed' && workflowStatus.value !== 'failed') {
+    if (
+      workflowStatus.value !== 'completed' &&
+      workflowStatus.value !== 'complete' &&
+      workflowStatus.value !== 'failed'
+    ) {
       startPolling()
     }
 
@@ -452,7 +525,11 @@ const confirmCareer = async (action) => {
 }
 
 const loadTrace = async () => {
-  if (!workflowId.value || traceLoading.value) {
+  if (
+    !workflowId.value ||
+    traceLoading.value ||
+    (traceLoaded.value && traceLoadedWorkflowId.value === workflowId.value && !traceDirty.value)
+  ) {
     return
   }
 
@@ -466,6 +543,7 @@ const loadTrace = async () => {
     traceSteps.value = firstTraceArray(data, TRACE_STEP_KEYS)
     traceToolCalls.value = firstTraceArray(data, TRACE_TOOL_CALL_KEYS)
     traceLoaded.value = true
+    traceLoadedWorkflowId.value = workflowId.value
     traceDirty.value = false
   } catch (err) {
     console.error(err)
@@ -473,6 +551,18 @@ const loadTrace = async () => {
   } finally {
     traceLoading.value = false
   }
+}
+
+const ensureTraceLoaded = async ({ expand = false } = {}) => {
+  if (!workflowId.value) {
+    return
+  }
+
+  if (expand) {
+    traceExpanded.value = true
+  }
+
+  await loadTrace()
 }
 
 const toggleTrace = async () => {

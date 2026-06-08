@@ -227,6 +227,23 @@ const formatItemDuration = (item) => {
   return '-'
 }
 
+const getStepDurationMs = (step) => {
+  const directDuration = firstPresent(step, ['duration_ms'])
+
+  if (directDuration !== undefined) {
+    return toDurationMs(directDuration)
+  }
+
+  const startedAt = parseTimestampMs(firstPresent(step, ['started_at', 'start_time']))
+  const endedAt = parseTimestampMs(firstPresent(step, ['ended_at', 'completed_at', 'finished_at']))
+
+  if (startedAt !== null && endedAt !== null) {
+    return Math.max(endedAt - startedAt, 0)
+  }
+
+  return null
+}
+
 const toTokenNumber = (value) => {
   if (value === null || value === undefined || value === '') {
     return null
@@ -385,14 +402,33 @@ const groupedToolCalls = computed(() => {
   return Array.from(groups.values())
 })
 
-const formattedDuration = computed(() => {
-  if (props.duration === '' || props.duration === null || props.duration === undefined) {
+const totalStepDuration = computed(() => {
+  return sourceSteps.value.reduce(
+    (result, step) => {
+      const durationMs = getStepDurationMs(step)
+
+      if (durationMs === null || Number.isNaN(durationMs)) {
+        return result
+      }
+
+      return {
+        totalMs: result.totalMs + durationMs,
+        countedSteps: result.countedSteps + 1,
+      }
+    },
+    {
+      totalMs: 0,
+      countedSteps: 0,
+    },
+  )
+})
+
+const formattedTotalStepDuration = computed(() => {
+  if (!totalStepDuration.value.countedSteps) {
     return '-'
   }
 
-  const durationMs = toDurationMs(props.duration)
-
-  return durationMs === null ? String(props.duration) : formatDurationMs(durationMs)
+  return formatDurationMs(totalStepDuration.value.totalMs)
 })
 
 const hasDetails = computed(() => normalizedSteps.value.length > 0 || groupedToolCalls.value.length > 0)
@@ -441,8 +477,8 @@ const rawTraceText = computed(() => {
         <strong>{{ normalizedWorkflowStatus }}</strong>
       </div>
       <div class="summary-item">
-        <span>总耗时</span>
-        <strong>{{ formattedDuration }}</strong>
+        <span>Total Step Duration</span>
+        <strong>{{ formattedTotalStepDuration }}</strong>
       </div>
       <div class="summary-item">
         <span>Nodes</span>
