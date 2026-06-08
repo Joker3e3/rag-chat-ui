@@ -33,6 +33,7 @@ const traceLoading = ref(false)
 const traceError = ref('')
 const traceSteps = ref([])
 const traceToolCalls = ref([])
+const traceRaw = ref(null)
 const historyExpanded = ref(false)
 const historyLoaded = ref(false)
 const historyLoading = ref(false)
@@ -65,6 +66,35 @@ const shouldShowTrace = computed(() => {
 const renderedReport = computed(() => {
   return md.render(report.value || '')
 })
+
+const TRACE_STEP_KEYS = ['steps', 'workflow_steps', 'workflowSteps', 'nodes']
+const TRACE_TOOL_CALL_KEYS = ['tool_calls', 'toolCalls', 'tool_call_records', 'toolCallRecords']
+
+const traceCandidateSources = (data) => {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return []
+  }
+
+  return [data, data.trace, data.workflow_trace, data.execution_trace, data.data].filter((source) => {
+    return source && typeof source === 'object' && !Array.isArray(source)
+  })
+}
+
+const firstTraceArray = (data, keys) => {
+  if (Array.isArray(data) && keys === TRACE_STEP_KEYS) {
+    return data
+  }
+
+  for (const source of traceCandidateSources(data)) {
+    for (const key of keys) {
+      if (Array.isArray(source[key])) {
+        return source[key]
+      }
+    }
+  }
+
+  return []
+}
 
 const formatHistoryDate = (value) => {
   if (!value) {
@@ -99,6 +129,7 @@ const resetTrace = () => {
   traceError.value = ''
   traceSteps.value = []
   traceToolCalls.value = []
+  traceRaw.value = null
 }
 
 const stopPolling = () => {
@@ -283,6 +314,7 @@ const resetWorkflowForHistory = (item) => {
   traceError.value = ''
   traceSteps.value = []
   traceToolCalls.value = []
+  traceRaw.value = null
 }
 
 const selectHistoryItem = async (item) => {
@@ -386,10 +418,9 @@ const loadTrace = async () => {
   try {
     const response = await axios.get(`${CAREER_RUNS_BASE_URL}/${workflowId.value}/trace`)
     const data = response.data || {}
-    traceSteps.value = Array.isArray(data.steps) ? data.steps : []
-    traceToolCalls.value = traceSteps.value.flatMap((step) => {
-      return Array.isArray(step.tool_calls) ? step.tool_calls : []
-    })
+    traceRaw.value = data
+    traceSteps.value = firstTraceArray(data, TRACE_STEP_KEYS)
+    traceToolCalls.value = firstTraceArray(data, TRACE_TOOL_CALL_KEYS)
     traceLoaded.value = true
     traceDirty.value = false
   } catch (err) {
@@ -548,8 +579,8 @@ onUnmounted(() => {
 
         <TracePanel v-if="shouldShowTrace" :workflow-id="workflowId" :workflow-status="workflowStatus"
           :execution-status="executionStatus" :duration="workflowDuration" :steps="traceSteps"
-          :tool-calls="traceToolCalls" :expanded="traceExpanded" :loaded="traceLoaded" :loading="traceLoading"
-          :error="traceError" @toggle="toggleTrace" />
+          :tool-calls="traceToolCalls" :raw-trace="traceRaw" :expanded="traceExpanded" :loaded="traceLoaded"
+          :loading="traceLoading" :error="traceError" @toggle="toggleTrace" />
       </section>
     </div>
   </div>
