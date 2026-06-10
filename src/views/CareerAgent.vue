@@ -241,6 +241,13 @@ const updateHistoryItemStatus = (nextWorkflowId, nextStatus) => {
     return
   }
 
+  if (selectedHistoryRun.value?.workflow_id === nextWorkflowId) {
+    selectedHistoryRun.value = {
+      ...selectedHistoryRun.value,
+      status: nextStatus,
+    }
+  }
+
   historyItems.value = historyItems.value.map((item) => {
     if (item.workflow_id !== nextWorkflowId) {
       return item
@@ -267,6 +274,10 @@ const applyRunStatus = (data = {}) => {
   updateHistoryItemStatus(workflowId.value, nextStatus)
   matchScore.value = data.match_score ?? ''
   confirmation.value = nextConfirmation
+
+  if (isHistoryMode.value && data.jd_text) {
+    jobDescription.value = data.jd_text
+  }
 
   if (nextStatus !== 'waiting_human_confirmation') {
     confirmationId.value = ''
@@ -391,7 +402,7 @@ const resetWorkflowForHistory = (item) => {
   workflowId.value = item.workflow_id || ''
   workflowStatus.value = item.status || ''
   executionStatus.value = item.status || ''
-  jobDescription.value = item.input_summary || ''
+  jobDescription.value = item.jd_text || ''
   traceExpanded.value = false
   traceLoaded.value = false
   traceDirty.value = true
@@ -468,12 +479,17 @@ const analyzeCareer = async () => {
     loading.value = true
 
     if (workflowId.value) {
-      upsertHistoryItem({
+      const nextHistoryItem = {
         workflow_id: workflowId.value,
         status: workflowStatus.value,
-        input_summary: data.input_summary || jobDescription.value,
+        jd_text: data.jd_text || jobDescription.value,
+        input_summary: data.jd_text || jobDescription.value,
         created_at: data.created_at || new Date().toISOString(),
-      })
+      }
+
+      upsertHistoryItem(nextHistoryItem)
+      selectedHistoryWorkflowId.value = workflowId.value
+      selectedHistoryRun.value = nextHistoryItem
       startPolling()
     } else {
       loading.value = false
@@ -623,24 +639,25 @@ onUnmounted(() => {
         <div class="career-inline-grid">
           <div class="career-field">
             <label for="session-id">session_id</label>
-            <input id="session-id" v-model="sessionId" type="text" />
+            <input id="session-id" v-model="sessionId" type="text" :readonly="isHistoryMode" />
           </div>
 
           <div class="career-field">
             <label for="user-id">user_id</label>
-            <input id="user-id" v-model="userId" type="text" />
+            <input id="user-id" v-model="userId" type="text" :readonly="isHistoryMode" />
           </div>
         </div>
 
         <div class="career-grid">
           <div class="career-field">
             <label for="job-description">岗位 JD</label>
-            <textarea id="job-description" v-model="jobDescription" placeholder="请输入岗位 JD 文本"></textarea>
+            <textarea id="job-description" v-model="jobDescription" placeholder="请输入岗位 JD 文本"
+              :readonly="isHistoryMode"></textarea>
           </div>
 
           <div class="career-field">
             <label for="resume-text">简历文本</label>
-            <textarea id="resume-text" v-model="resumeText" placeholder="请输入简历文本"></textarea>
+            <textarea id="resume-text" v-model="resumeText" placeholder="请输入简历文本" :readonly="isHistoryMode"></textarea>
           </div>
         </div>
 
