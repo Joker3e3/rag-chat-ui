@@ -7,6 +7,7 @@ import TracePanel from '../components/TracePanel.vue'
 const AGENT_BASE_URL = import.meta.env.VITE_AGENT_BASE_URL
 const CAREER_AGENT_URL = `${AGENT_BASE_URL}/career_agent/analyze`
 const CAREER_CONFIRM_URL = `${AGENT_BASE_URL}/career_agent/confirm`
+const CAREER_CANCEL_URL = `${AGENT_BASE_URL}/career_agent/cancel`
 const CAREER_RUNS_BASE_URL = `${AGENT_BASE_URL}/career_agent/runs`
 const md = new MarkdownIt()
 
@@ -43,6 +44,7 @@ const historyError = ref('')
 const selectedHistoryWorkflowId = ref('')
 const selectedHistoryRun = ref(null)
 const confirming = ref(false)
+const canceling = ref(false)
 const confirmationStatus = ref('')
 const confirmationMessage = ref('')
 const confirmationWorkflowStatus = ref('')
@@ -70,6 +72,10 @@ const renderedReport = computed(() => {
 })
 
 const isHistoryMode = computed(() => Boolean(selectedHistoryWorkflowId.value))
+
+const isSelectedCurrentWorkflow = computed(() => {
+  return selectedHistoryRun.value?._isCurrentWorkflow && selectedHistoryWorkflowId.value === workflowId.value
+})
 
 const TRACE_STEP_KEYS = ['steps', 'workflow_steps', 'workflowSteps', 'nodes']
 const TRACE_TOOL_CALL_KEYS = ['tool_calls', 'toolCalls', 'tool_call_records', 'toolCallRecords']
@@ -129,6 +135,30 @@ const isQueuedStatus = (status) => {
   return String(status || '').toLowerCase() === 'queued'
 }
 
+const isRunningStatus = (status) => {
+  return String(status || '').toLowerCase() === 'running'
+}
+
+const isWaitingStatus = (status) => {
+  return String(status || '').toLowerCase() === 'waiting_human_confirmation'
+}
+
+const isCancellingStatus = (status) => {
+  return String(status || '').toLowerCase() === 'cancelling'
+}
+
+const isCancelableStatus = (status) => {
+  return isQueuedStatus(status) || isRunningStatus(status) || isWaitingStatus(status) || isCancellingStatus(status)
+}
+
+const shouldShowCancelAnalysis = computed(() => {
+  return Boolean(
+    workflowId.value &&
+      isCancelableStatus(workflowStatus.value) &&
+      (!isHistoryMode.value || isSelectedCurrentWorkflow.value),
+  )
+})
+
 const shouldAutoLoadTraceStatus = (status) => {
   const normalizedStatus = String(status || '').toLowerCase()
 
@@ -167,12 +197,20 @@ const upsertHistoryItem = (nextItem) => {
 
 const mergeHistoryItems = (nextItems) => {
   const fetchedItems = Array.isArray(nextItems) ? nextItems : []
+  const mergedFetchedItems = fetchedItems.map((fetchedItem) => {
+    const currentItem = historyItems.value.find((item) => item.workflow_id === fetchedItem.workflow_id)
+
+    return {
+      ...currentItem,
+      ...fetchedItem,
+    }
+  })
   const fetchedIds = new Set(fetchedItems.map((item) => item.workflow_id).filter(Boolean))
   const currentOnlyItems = historyItems.value.filter((item) => {
     return item.workflow_id && !fetchedIds.has(item.workflow_id)
   })
 
-  historyItems.value = [...currentOnlyItems, ...fetchedItems]
+  historyItems.value = [...currentOnlyItems, ...mergedFetchedItems]
 }
 
 const resetTrace = () => {
@@ -200,6 +238,7 @@ const clearWorkflowViewState = () => {
   executionStatus.value = ''
   confirmation.value = null
   confirming.value = false
+  canceling.value = false
   confirmationStatus.value = ''
   confirmationMessage.value = ''
   confirmationWorkflowStatus.value = ''
@@ -230,6 +269,7 @@ const resetConfirmation = () => {
   selectedHistoryRun.value = null
   resetTrace()
   confirming.value = false
+  canceling.value = false
   confirmationStatus.value = ''
   confirmationMessage.value = ''
   confirmationWorkflowStatus.value = ''
@@ -292,9 +332,24 @@ const applyRunStatus = (data = {}) => {
     return
   }
 
+  if (data.status === 'cancelling') {
+    loading.value = true
+    statusMessage.value = '中止中...'
+    return
+  }
+
+  if (data.status === 'cancelled') {
+    stopPolling()
+    loading.value = false
+    canceling.value = false
+    statusMessage.value = '已中止'
+    return
+  }
+
   if (data.status === 'waiting_human_confirmation') {
     stopPolling()
     loading.value = false
+    canceling.value = false
     report.value = data.final_report || ''
     confirmationId.value = nextConfirmation?.confirmation_id || data.confirmation_id || ''
     confirmationStatus.value = nextConfirmation?.status || ''
@@ -306,6 +361,7 @@ const applyRunStatus = (data = {}) => {
   if (data.status === 'completed' || data.status === 'complete') {
     stopPolling()
     loading.value = false
+    canceling.value = false
     statusMessage.value = '流程已完成。'
     report.value = data.final_report || report.value
     return
@@ -314,6 +370,7 @@ const applyRunStatus = (data = {}) => {
   if (data.status === 'failed') {
     stopPolling()
     loading.value = false
+    canceling.value = false
     error.value = data.error_message || '分析流程执行失败。'
     statusMessage.value = ''
   }
@@ -442,7 +499,7 @@ const selectHistoryItem = async (item) => {
       await ensureTraceLoaded({ expand: true })
     }
 
-    if (workflowStatus.value === 'queued' || workflowStatus.value === 'running') {
+    if (isCancelableStatus(workflowStatus.value)) {
       startPolling()
     }
   } catch {
@@ -485,6 +542,7 @@ const analyzeCareer = async () => {
         jd_text: data.jd_text || jobDescription.value,
         input_summary: data.jd_text || jobDescription.value,
         created_at: data.created_at || new Date().toISOString(),
+        _isCurrentWorkflow: true,
       }
 
       upsertHistoryItem(nextHistoryItem)
@@ -499,6 +557,41 @@ const analyzeCareer = async () => {
     console.error(err)
     error.value = err.response?.data?.detail || err.message || '分析失败，请检查后端服务。'
     loading.value = false
+  }
+}
+
+const cancelWorkflow = async () => {
+  if (!shouldShowCancelAnalysis.value || canceling.value || isCancellingStatus(workflowStatus.value)) {
+    return
+  }
+
+  const confirmed = window.confirm('确认中止当前分析任务吗？中止后当前任务将不再继续执行。')
+
+  if (!confirmed) {
+    return
+  }
+
+  error.value = ''
+  canceling.value = true
+
+  try {
+    const response = await axios.post(`${CAREER_CANCEL_URL}/${workflowId.value}`)
+    const data = response.data || {}
+
+    if (data.status) {
+      applyRunStatus(data)
+    } else {
+      await fetchWorkflowStatus({ force: true })
+    }
+
+    if (isCancelableStatus(data.status || workflowStatus.value)) {
+      startPolling()
+    }
+  } catch (err) {
+    console.error(err)
+    error.value = err.response?.data?.detail || err.message || '中止分析请求失败，请稍后重试。'
+  } finally {
+    canceling.value = false
   }
 }
 
@@ -521,11 +614,7 @@ const confirmCareer = async (action) => {
     traceDirty.value = true
     await fetchWorkflowStatus({ force: true })
 
-    if (
-      workflowStatus.value !== 'completed' &&
-      workflowStatus.value !== 'complete' &&
-      workflowStatus.value !== 'failed'
-    ) {
+    if (isCancelableStatus(workflowStatus.value)) {
       startPolling()
     }
 
@@ -662,8 +751,16 @@ onUnmounted(() => {
         </div>
 
         <div class="career-actions">
+          <button
+            v-if="shouldShowCancelAnalysis"
+            class="career-cancel"
+            :disabled="canceling || isCancellingStatus(workflowStatus)"
+            @click="cancelWorkflow"
+          >
+            {{ canceling || isCancellingStatus(workflowStatus) ? '中止中...' : '中止分析' }}
+          </button>
           <button class="career-submit" :disabled="loading || isHistoryMode" @click="analyzeCareer">
-            {{ isHistoryMode ? '历史记录查看中' : loading ? '分析中...' : '开始分析' }}
+            {{ isCancellingStatus(workflowStatus) ? '中止中...' : isHistoryMode ? '历史记录查看中' : loading ? '分析中...' : '开始分析' }}
           </button>
         </div>
 
@@ -863,6 +960,16 @@ onUnmounted(() => {
   color: #175cd3;
 }
 
+.history-status-cancelling {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.history-status-cancelled {
+  background: #f2f4f7;
+  color: #475467;
+}
+
 .history-status-waiting_human_confirmation {
   background: #fffaeb;
   color: #b54708;
@@ -1014,7 +1121,33 @@ onUnmounted(() => {
 .career-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
   margin-top: 16px;
+}
+
+.career-cancel {
+  min-width: 96px;
+  height: 40px;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  background: #fff1f2;
+  color: #b42318;
+  cursor: pointer;
+  font-weight: 700;
+  transition: background 0.2s, transform 0.2s;
+}
+
+.career-cancel:hover:not(:disabled) {
+  background: #ffe4e6;
+}
+
+.career-cancel:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.career-cancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .career-submit {
