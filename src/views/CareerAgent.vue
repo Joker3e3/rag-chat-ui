@@ -1,10 +1,13 @@
 <script setup>
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
+import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import TracePanel from '../components/TracePanel.vue'
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 const AGENT_BASE_URL = import.meta.env.VITE_AGENT_BASE_URL
+const CANDIDATES_URL = `${API_BASE_URL}/candidates`
 const CAREER_AGENT_URL = `${AGENT_BASE_URL}/career_agent/analyze`
 const CAREER_CONFIRM_URL = `${AGENT_BASE_URL}/career_agent/confirm`
 const CAREER_CANCEL_URL = `${AGENT_BASE_URL}/career_agent/cancel`
@@ -49,6 +52,14 @@ const confirmationStatus = ref('')
 const confirmationMessage = ref('')
 const confirmationWorkflowStatus = ref('')
 const confirmationError = ref('')
+const candidates = ref([])
+const selectedCandidateId = ref('')
+const resumes = ref([])
+const selectedResumeId = ref('')
+const loadingCandidates = ref(false)
+const loadingResumes = ref(false)
+const candidateError = ref('')
+const resumeError = ref('')
 let pollingTimer = null
 let pollingRequestInFlight = false
 
@@ -75,6 +86,10 @@ const isHistoryMode = computed(() => Boolean(selectedHistoryWorkflowId.value))
 
 const isSelectedCurrentWorkflow = computed(() => {
   return selectedHistoryRun.value?._isCurrentWorkflow && selectedHistoryWorkflowId.value === workflowId.value
+})
+
+const isSubmitDisabled = computed(() => {
+  return Boolean(loading.value || isHistoryMode.value || loadingCandidates.value || loadingResumes.value)
 })
 
 const TRACE_STEP_KEYS = ['steps', 'workflow_steps', 'workflowSteps', 'nodes']
@@ -123,6 +138,116 @@ const formatHistoryDate = (value) => {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+const maskPhone = (phone) => {
+  const normalizedPhone = String(phone || '').trim()
+
+  if (normalizedPhone.length < 7) {
+    return normalizedPhone || '暂无手机号'
+  }
+
+  return `${normalizedPhone.slice(0, 3)}****${normalizedPhone.slice(-4)}`
+}
+
+const formatCandidateOption = (candidate) => {
+  if (candidate.display_label) {
+    return candidate.display_label
+  }
+
+  return `${candidate.school || '未知学校'}｜${candidate.name || '未命名'}｜${maskPhone(candidate.phone)}`
+}
+
+const formatResumeDate = (value) => {
+  if (!value) {
+    return '上传时间未知'
+  }
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+const formatResumeOption = (resume) => {
+  if (resume.display_label) {
+    return resume.display_label
+  }
+
+  const versionLabel = resume.is_latest ? '最新版本' : '历史版本'
+
+  return `${versionLabel}｜${resume.file_name || resume.resume_id}｜${formatResumeDate(resume.created_at)}`
+}
+
+const pickDefaultResumeId = (resumeItems) => {
+  const latestMarkedResume = resumeItems.find((resume) => resume.is_latest)
+
+  if (latestMarkedResume?.resume_id) {
+    return latestMarkedResume.resume_id
+  }
+
+  const latestCreatedResume = [...resumeItems].sort((left, right) => {
+    return (Date.parse(right.created_at || '') || 0) - (Date.parse(left.created_at || '') || 0)
+  })[0]
+
+  return latestCreatedResume?.resume_id || ''
+}
+
+const parseHistorySummaryIds = (inputSummary) => {
+  if (!inputSummary) {
+    return {}
+  }
+
+  try {
+    const summary = typeof inputSummary === 'string' ? JSON.parse(inputSummary) : inputSummary
+
+    if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+      return {}
+    }
+
+    return {
+      candidateId: summary.candidate_id || '',
+      resumeId: summary.resume_id || '',
+    }
+  } catch {
+    return {}
+  }
+}
+
+const extractHistorySubjectIds = (run = {}) => {
+  let candidateId = run.candidate_id || ''
+  let resumeId = run.resume_id || ''
+
+  if ((!candidateId || !resumeId) && run.input_summary) {
+    const summaryIds = parseHistorySummaryIds(run.input_summary)
+    candidateId = candidateId || summaryIds.candidateId || ''
+    resumeId = resumeId || summaryIds.resumeId || ''
+  }
+
+  return { candidateId, resumeId }
+}
+
+const resetHistorySubject = () => {
+  if (!isHistoryMode.value) {
+    return
+  }
+
+  selectedCandidateId.value = ''
+  resumes.value = []
+  selectedResumeId.value = ''
+  candidateError.value = ''
+  resumeError.value = ''
+  loadingCandidates.value = false
+  loadingResumes.value = false
 }
 
 const historyStatusClass = (status) => {
@@ -245,6 +370,7 @@ const clearWorkflowViewState = () => {
   confirmationError.value = ''
   loading.value = false
   analyzeResponded.value = false
+  resetHistorySubject()
   resetTrace()
 }
 
@@ -274,6 +400,7 @@ const resetConfirmation = () => {
   confirmationMessage.value = ''
   confirmationWorkflowStatus.value = ''
   confirmationError.value = ''
+  resetHistorySubject()
 }
 
 const updateHistoryItemStatus = (nextWorkflowId, nextStatus) => {
@@ -417,6 +544,179 @@ const startPolling = () => {
   pollingTimer = setInterval(pollRunStatus, 2000)
 }
 
+const loadCandidates = async () => {
+  candidateError.value = ''
+  loadingCandidates.value = true
+  selectedCandidateId.value = ''
+  resumes.value = []
+  selectedResumeId.value = ''
+  resumeError.value = ''
+
+  try {
+    const response = await axios.get(CANDIDATES_URL, {
+      params: userId.value ? { user_id: userId.value } : {},
+    })
+    const data = response.data || []
+    candidates.value = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+  } catch (err) {
+    console.error(err)
+    candidates.value = []
+    candidateError.value = err.response?.data?.detail || err.message || '候选人列表加载失败，请稍后重试。'
+  } finally {
+    loadingCandidates.value = false
+  }
+}
+
+const loadResumes = async (candidateId) => {
+  if (!candidateId) {
+    return
+  }
+
+  const requestedCandidateId = candidateId
+  resumeError.value = ''
+  loadingResumes.value = true
+
+  try {
+    const response = await axios.get(`${CANDIDATES_URL}/${requestedCandidateId}/resumes`)
+    const data = response.data || []
+    const nextResumes = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+
+    if (selectedCandidateId.value !== requestedCandidateId) {
+      return
+    }
+
+    resumes.value = nextResumes
+    selectedResumeId.value = pickDefaultResumeId(nextResumes)
+
+    if (!nextResumes.length) {
+      resumeError.value = '该候选人暂无可用简历版本'
+    }
+  } catch (err) {
+    console.error(err)
+
+    if (selectedCandidateId.value === requestedCandidateId) {
+      resumes.value = []
+      selectedResumeId.value = ''
+      resumeError.value = err.response?.data?.detail || err.message || '简历版本加载失败，请稍后重试。'
+    }
+  } finally {
+    if (selectedCandidateId.value === requestedCandidateId) {
+      loadingResumes.value = false
+    }
+  }
+}
+
+const selectCandidate = async () => {
+  resumes.value = []
+  selectedResumeId.value = ''
+  resumeError.value = ''
+
+  if (!selectedCandidateId.value) {
+    return
+  }
+
+  await loadResumes(selectedCandidateId.value)
+}
+
+const resolveHistorySubject = async (run = {}) => {
+  const { candidateId, resumeId } = extractHistorySubjectIds(run)
+  const subjectUserId = run.user_id || userId.value
+  const requestWorkflowId = run.workflow_id || workflowId.value
+
+  resetHistorySubject()
+  selectedCandidateId.value = candidateId
+  selectedResumeId.value = resumeId
+
+  if (!candidateId || !resumeId) {
+    candidateError.value = '本次历史记录未关联候选人或简历版本'
+    return
+  }
+
+  loadingCandidates.value = true
+  loadingResumes.value = true
+
+  try {
+    const response = await axios.get(CANDIDATES_URL, {
+      params: subjectUserId ? { user_id: subjectUserId } : {},
+    })
+    const data = response.data || []
+    const candidateItems = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+
+    if (requestWorkflowId && selectedHistoryWorkflowId.value !== requestWorkflowId) {
+      return
+    }
+
+    const historyCandidate = candidateItems.find((candidate) => candidate.candidate_id === candidateId) || null
+    candidates.value = historyCandidate
+      ? candidateItems
+      : [
+          {
+            candidate_id: candidateId,
+            display_label: `候选人信息未找到，candidate_id: ${candidateId}`,
+          },
+          ...candidateItems,
+        ]
+    selectedCandidateId.value = candidateId
+
+    if (!historyCandidate) {
+      candidateError.value = `候选人信息未找到，candidate_id: ${candidateId}`
+    }
+  } catch (err) {
+    console.error(err)
+
+    if (!requestWorkflowId || selectedHistoryWorkflowId.value === requestWorkflowId) {
+      candidateError.value = err.response?.data?.detail || err.message || '候选人信息加载失败，请稍后重试。'
+    }
+  } finally {
+    if (!requestWorkflowId || selectedHistoryWorkflowId.value === requestWorkflowId) {
+      loadingCandidates.value = false
+    }
+  }
+
+  if (requestWorkflowId && selectedHistoryWorkflowId.value !== requestWorkflowId) {
+    return
+  }
+
+  loadingResumes.value = true
+
+  try {
+    const response = await axios.get(`${CANDIDATES_URL}/${candidateId}/resumes`)
+    const data = response.data || []
+    const resumeItems = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : []
+
+    if (requestWorkflowId && selectedHistoryWorkflowId.value !== requestWorkflowId) {
+      return
+    }
+
+    const historyResume = resumeItems.find((resume) => resume.resume_id === resumeId) || null
+    resumes.value = historyResume
+      ? resumeItems
+      : [
+          {
+            resume_id: resumeId,
+            candidate_id: candidateId,
+            display_label: `简历版本未找到，resume_id: ${resumeId}`,
+          },
+          ...resumeItems,
+        ]
+    selectedResumeId.value = resumeId
+
+    if (!historyResume) {
+      resumeError.value = `简历版本未找到，resume_id: ${resumeId}`
+    }
+  } catch (err) {
+    console.error(err)
+
+    if (!requestWorkflowId || selectedHistoryWorkflowId.value === requestWorkflowId) {
+      resumeError.value = err.response?.data?.detail || err.message || '简历版本信息加载失败，请稍后重试。'
+    }
+  } finally {
+    if (!requestWorkflowId || selectedHistoryWorkflowId.value === requestWorkflowId) {
+      loadingResumes.value = false
+    }
+  }
+}
+
 const loadHistory = async () => {
   historyError.value = ''
   historyLoading.value = true
@@ -446,6 +746,7 @@ const toggleHistory = async () => {
 
 const resetWorkflowForHistory = (item) => {
   stopPolling()
+  resetHistorySubject()
   error.value = ''
   report.value = ''
   matchScore.value = ''
@@ -472,10 +773,12 @@ const resetWorkflowForHistory = (item) => {
 }
 
 const exitHistoryMode = () => {
+  resetHistorySubject()
   selectedHistoryWorkflowId.value = ''
   selectedHistoryRun.value = null
   jobDescription.value = ''
   clearWorkflowViewState()
+  loadCandidates()
 }
 
 const selectHistoryItem = async (item) => {
@@ -493,7 +796,13 @@ const selectHistoryItem = async (item) => {
   resetWorkflowForHistory(item)
 
   try {
-    await fetchWorkflowStatus({ force: true })
+    const runDetail = (await fetchWorkflowStatus({ force: true })) ?? {}
+    const resolvedRun = { ...item, ...runDetail }
+    selectedHistoryRun.value = {
+      ...selectedHistoryRun.value,
+      ...runDetail,
+    }
+    await resolveHistorySubject(resolvedRun)
 
     if (!isQueuedStatus(item.status)) {
       await ensureTraceLoaded({ expand: true })
@@ -513,6 +822,25 @@ const analyzeCareer = async () => {
   }
 
   error.value = ''
+
+  if (!jobDescription.value.trim()) {
+    error.value = '请输入岗位 JD'
+    ElMessage.error(error.value)
+    return
+  }
+
+  if (!selectedCandidateId.value) {
+    error.value = '请选择候选人'
+    ElMessage.error(error.value)
+    return
+  }
+
+  if (!selectedResumeId.value) {
+    error.value = resumes.value.length ? '请选择简历版本' : '该候选人暂无可用简历版本'
+    ElMessage.error(error.value)
+    return
+  }
+
   report.value = ''
   analyzeResponded.value = false
   resetConfirmation()
@@ -524,6 +852,8 @@ const analyzeCareer = async () => {
       user_id: userId.value,
       job_description: jobDescription.value,
       resume_text: resumeText.value,
+      candidate_id: selectedCandidateId.value,
+      resume_id: selectedResumeId.value,
     })
 
     analyzeResponded.value = true
@@ -683,6 +1013,10 @@ const toggleTrace = async () => {
   }
 }
 
+onMounted(() => {
+  loadCandidates()
+})
+
 onUnmounted(() => {
   stopPolling()
 })
@@ -704,7 +1038,7 @@ onUnmounted(() => {
           <button v-for="item in historyItems" :key="item.workflow_id" class="history-item"
             :class="{ 'history-item-active': item.workflow_id === selectedHistoryWorkflowId }" type="button"
             @click="selectHistoryItem(item)">
-            <span class="history-summary">{{ item.input_summary || '无摘要' }}</span>
+            <span class="history-summary">{{ item.jd_text || '无摘要' }}</span>
             <span class="history-meta">
               <span class="history-status" :class="historyStatusClass(item.status)">{{ item.status }}</span>
               <time>{{ formatHistoryDate(item.created_at) }}</time>
@@ -737,6 +1071,50 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div class="candidate-selector">
+          <div class="career-field">
+            <label>候选人 <span class="required-mark">*</span></label>
+            <div v-if="loadingCandidates" class="selector-hint">正在加载候选人...</div>
+            <template v-else>
+              <div v-if="candidateError && !candidates.length" class="selector-error">{{ candidateError }}</div>
+              <div v-else-if="!candidates.length" class="selector-hint">暂无候选人，请先上传符合命名规范的简历。</div>
+              <select
+                v-else
+                v-model="selectedCandidateId"
+                class="select-control"
+                :disabled="isHistoryMode || loading"
+                @change="selectCandidate"
+              >
+                <option value="" disabled>请选择候选人</option>
+                <option v-for="candidate in candidates" :key="candidate.candidate_id" :value="candidate.candidate_id">
+                  {{ formatCandidateOption(candidate) }}
+                </option>
+              </select>
+              <div v-if="candidateError && candidates.length" class="selector-error">{{ candidateError }}</div>
+            </template>
+          </div>
+
+          <div v-if="selectedCandidateId" class="career-field">
+            <label>简历版本 <span class="required-mark">*</span></label>
+            <div v-if="loadingResumes" class="selector-hint">正在加载简历版本...</div>
+            <template v-else>
+              <div v-if="resumeError && !resumes.length" class="selector-error">{{ resumeError }}</div>
+              <select
+                v-else
+                v-model="selectedResumeId"
+                class="select-control"
+                :disabled="isHistoryMode || loading"
+              >
+                <option value="" disabled>请选择简历版本</option>
+                <option v-for="resume in resumes" :key="resume.resume_id" :value="resume.resume_id">
+                  {{ formatResumeOption(resume) }}
+                </option>
+              </select>
+              <div v-if="resumeError && resumes.length" class="selector-error">{{ resumeError }}</div>
+            </template>
+          </div>
+        </div>
+
         <div class="career-grid">
           <div class="career-field">
             <label for="job-description">岗位 JD</label>
@@ -759,7 +1137,7 @@ onUnmounted(() => {
           >
             {{ canceling || isCancellingStatus(workflowStatus) ? '中止中...' : '中止分析' }}
           </button>
-          <button class="career-submit" :disabled="loading || isHistoryMode" @click="analyzeCareer">
+          <button class="career-submit" :disabled="isSubmitDisabled" @click="analyzeCareer">
             {{ isCancellingStatus(workflowStatus) ? '中止中...' : isHistoryMode ? '历史记录查看中' : loading ? '分析中...' : '开始分析' }}
           </button>
         </div>
@@ -1088,7 +1466,59 @@ onUnmounted(() => {
   margin-top: 16px;
 }
 
-.career-field input,
+.candidate-selector {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.required-mark {
+  color: #cf1322;
+}
+
+.selector-hint,
+.selector-error {
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #f9fafb;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+.selector-error {
+  border-color: #ffccc7;
+  background: #fff1f0;
+  color: #cf1322;
+}
+
+.select-control {
+  width: 100%;
+  height: 40px;
+  border: 1px solid #d0d5dd;
+  border-radius: 10px;
+  background: #fff;
+  color: #101828;
+  font-size: 15px;
+  line-height: 1.5;
+  outline: none;
+  padding: 0 12px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.select-control:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
+}
+
+.select-control:disabled {
+  background: #f2f4f7;
+  color: #98a2b3;
+  cursor: not-allowed;
+}
+
+.career-field > input,
 .career-field textarea {
   width: 100%;
   border: 1px solid #d0d5dd;
@@ -1100,7 +1530,7 @@ onUnmounted(() => {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.career-field input {
+.career-field > input {
   height: 40px;
   padding: 0 12px;
 }
@@ -1112,7 +1542,7 @@ onUnmounted(() => {
   font-family: Arial, sans-serif;
 }
 
-.career-field input:focus,
+.career-field > input:focus,
 .career-field textarea:focus {
   border-color: #1677ff;
   box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
